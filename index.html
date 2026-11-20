@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Car Sound">
+<title>Car Sound</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#0b0b0e">
+<style>
+:root{--bg:#f3f3f6;--fg:#111;--mut:#666;--card:#fff;--go:#16a34a;--stop:#dc2626;--line:#d8d8de;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0b0e;--fg:#f2f2f5;--mut:#9a9aa5;--card:#17171c;--line:#2c2c34}}
+:root[data-theme="dark"]{--bg:#0b0b0e;--fg:#f2f2f5;--mut:#9a9aa5;--card:#17171c;--line:#2c2c34}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:16px -apple-system,system-ui,Helvetica,Arial,sans-serif;display:flex;flex-direction:column;align-items:center;padding:18px}
+main{width:100%;max-width:460px;display:flex;flex-direction:column;gap:16px}
+h1{margin:4px 0 0;font-size:26px;text-align:center}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}
+.rpm{font:700 52px ui-monospace,Menlo,monospace;text-align:center}
+.sub{text-align:center;color:var(--mut);margin-top:4px}
+.bar{height:10px;border-radius:5px;background:var(--line);margin-top:12px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--go);transition:width .08s}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.seg button{padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:15px}
+.seg button.on{background:var(--fg);color:var(--bg);font-weight:600}
+label{display:block;margin:10px 0 4px;color:var(--mut);font-size:14px}
+input[type=range]{width:100%}
+#go{padding:18px;border:0;border-radius:16px;font-size:22px;font-weight:700;color:#fff;background:var(--go)}
+#go.run{background:var(--stop)}
+.note{color:var(--mut);font-size:13px;text-align:center;line-height:1.4}
+</style>
+</head>
+<body>
+<main>
+<h1>🏎️ Car Sound</h1>
+<div class="card">
+  <div class="rpm"><span id="rpm">0</span> <small style="font-size:18px">RPM</small></div>
+  <div class="sub"><span id="kmh">0</span> km/h · <span id="mph">0</span> mph</div>
+  <div class="bar"><i id="thr"></i></div>
+</div>
+<div class="seg" id="seg"></div>
+<div class="card">
+  <label>Volume</label><input id="vol" type="range" min="0" max="1" step="0.01" value="0.7">
+  <label>Throttle sensitivity</label><input id="sens" type="range" min="0.3" max="2.5" step="0.1" value="1">
+</div>
+<button id="go">Start</button>
+<div class="note" id="st">Pair your phone with the car radio over Bluetooth, then tap Start.<br>Turn the ringer switch to ring (silent mode mutes web audio).</div>
+</main>
+<script>
+const P=[{n:'V8 Muscle',c:8,i:750,r:6500},{n:'Inline-4 Tuner',c:4,i:900,r:8000},{n:'V6 Sport',c:6,i:800,r:7000},{n:'V12 Exotic',c:12,i:900,r:8500}];
+const GT=[30,55,85,120,160,220];
+const S={gps:0,sm:0,last:0,lt:0,acc:0,mm:0,thr:0,rpm:800,pi:0,vol:.7,sens:1};
+let ctx,osc=[],master,filt,nGain,wake,timer,running=false;
+const $=id=>document.getElementById(id);
+const seg=$('seg');
+P.forEach((p,i)=>{const b=document.createElement('button');b.textContent=p.n;if(!i)b.className='on';
+ b.onclick=()=>{S.pi=i;[...seg.children].forEach((c,j)=>c.className=j==i?'on':'')};seg.appendChild(b)});
+$('vol').oninput=e=>S.vol=+e.target.value;
+$('sens').oninput=e=>S.sens=+e.target.value;
+const say=t=>$('st').innerHTML=t;
+
+function buildAudio(){
+ ctx=new (window.AudioContext||window.webkitAudioContext)();
+ master=ctx.createGain();filt=ctx.createBiquadFilter();filt.type='lowpass';filt.frequency.value=1500;
+ filt.connect(master);master.connect(ctx.destination);
+ osc=[];
+ for(let h=0;h<=6;h++){ // h=0 is the half-rate rumble
+  const o=ctx.createOscillator();o.type=h==0?'sine':'sawtooth';
+  const g=ctx.createGain();g.gain.value=h==0?0.5:0.5/h;
+  o.connect(g);g.connect(filt);o.start();osc.push({o,h});
+ }
+ const len=ctx.sampleRate*2,buf=ctx.createBuffer(1,len,ctx.sampleRate),d=buf.getChannelData(0);
+ for(let i=0;i<len;i++)d[i]=Math.random()*2-1;
+ const ns=ctx.createBufferSource();ns.buffer=buf;ns.loop=true;
+ const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=900;bp.Q.value=0.6;
+ nGain=ctx.createGain();nGain.gain.value=0.02;
+ ns.connect(bp);bp.connect(nGain);nGain.connect(master);ns.start();
+}
+
+function tick(){
+ const p=P[S.pi];
+ S.sm+=(S.gps-S.sm)*0.1;S.acc*=0.98;
+ let t=Math.max(0,S.acc)/(3/S.sens);
+ if(S.acc>0.3)t+=S.mm/4*S.sens;
+ t=Math.min(1,t);
+ S.thr+=(t-S.thr)*(t>S.thr?0.25:0.08);
+ const kmh=S.sm*3.6;
+ const top=GT.find(x=>kmh<x)||GT[GT.length-1];
+ let base=S.sm<1?p.i:p.i+(kmh/top)*(p.r-p.i)*0.8;
+ const tgt=Math.min(p.r,base+S.thr*1500);
+ S.rpm+=(tgt-S.rpm)*0.2;
+ const fire=S.rpm/60*(p.c/2),now=ctx.currentTime;
+ osc.forEach(({o,h})=>o.frequency.setTargetAtTime(h==0?fire/2:fire*h,now,0.03));
+ master.gain.setTargetAtTime(S.vol*(0.45+0.55*S.thr),now,0.05);
+ filt.frequency.setTargetAtTime(700+S.thr*2800+S.rpm*0.25,now,0.05);
+ nGain.gain.setTargetAtTime(0.02+0.2*S.thr,now,0.05);
+ $('rpm').textContent=Math.round(S.rpm);$('kmh').textContent=Math.round(kmh);
+ $('mph').textContent=Math.round(kmh*0.621);$('thr').style.width=(S.thr*100)+'%';
+}
+
+function onGeo(pos){
+ const sp=pos.coords.speed;
+ if(sp==null||sp<0)return;
+ const t=pos.timestamp/1000;
+ if(S.lt>0&&t-S.lt>0.1){S.acc+=((sp-S.last)/(t-S.lt)-S.acc)*0.5}
+ S.last=sp;S.lt=t;S.gps=sp;
+}
+function onMotion(e){
+ let g=0;
+ if(e.acceleration&&e.acceleration.x!=null){const a=e.acceleration;g=Math.hypot(a.x,a.y,a.z)}
+ else if(e.accelerationIncludingGravity){const a=e.accelerationIncludingGravity;g=Math.abs(Math.hypot(a.x,a.y,a.z)-9.81)}
+ S.mm+=(g-S.mm)*0.15;
+}
+async function lockScreen(){try{wake=await navigator.wakeLock.request('screen')}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(running&&document.visibilityState==='visible')lockScreen()});
+
+async function start(){
+ if(!ctx)buildAudio();
+ await ctx.resume();
+ try{if(window.DeviceMotionEvent&&DeviceMotionEvent.requestPermission){await DeviceMotionEvent.requestPermission()}}catch(e){}
+ window.addEventListener('devicemotion',onMotion);
+ if(navigator.geolocation){
+  S.watch=navigator.geolocation.watchPosition(onGeo,
+   err=>say('Location blocked. Allow location for this page in Safari settings, then try again.'),
+   {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+ }else say('This browser has no location access.');
+ lockScreen();
+ timer=setInterval(tick,33);
+ running=true;$('go').textContent='Stop';$('go').className='run';
+ say('Running. Keep this screen open while you drive. It stays awake on its own.');
+}
+function stop(){
+ clearInterval(timer);window.removeEventListener('devicemotion',onMotion);
+ if(S.watch!=null)navigator.geolocation.clearWatch(S.watch);
+ if(wake){try{wake.release()}catch(e){}}
+ if(ctx)ctx.suspend();
+ running=false;$('go').textContent='Start';$('go').className='';
+ say('Stopped.');
+}
+$('go').onclick=()=>running?stop():start();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
