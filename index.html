@@ -28,6 +28,7 @@ label{display:block;margin:10px 0 4px;color:var(--mut);font-size:14px}
 input[type=range]{width:100%}
 #go{padding:18px;border:0;border-radius:16px;font-size:22px;font-weight:700;color:#fff;background:var(--go)}
 #go.run{background:var(--stop)}
+.diag{font-size:14px;line-height:1.7}.diag b{font-variant-numeric:tabular-nums}.cbar{position:relative;height:12px;border-radius:6px;background:var(--line);margin:8px 0}.cbar i{position:absolute;top:0;height:100%;background:var(--go);border-radius:6px}.cbar u{position:absolute;left:50%;top:-2px;height:16px;border-left:2px solid var(--mut)}.row{display:flex;gap:8px;margin-top:8px}.row button{flex:1;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:15px}
 .note{color:var(--mut);font-size:13px;text-align:center;line-height:1.4}
 </style>
 </head>
@@ -44,8 +45,15 @@ input[type=range]{width:100%}
   <label>Cabin ambience</label><input id="cab" type="range" min="0" max="1" step="0.01" value="0.25">
   <label>Throttle sensitivity</label><input id="sens" type="range" min="0.3" max="2.5" step="0.1" value="1">
 </div>
+<div class="card diag">
+  <b>Throttle test</b><div id="cs" style="color:var(--mut)"></div>
+  <div class="row"><button id="calb">Recalibrate</button></div>
+  <div class="cbar"><u></u><i id="cb"></i></div>
+  <div>Push: <b id="af">0.0</b> m/s² · GPS: <b id="ga">0.0</b> m/s² · Throttle: <b id="tp">0</b>%</div>
+  <div>Now: <b id="ns">Steady</b></div>
+</div>
 <button id="go">Start</button>
-<div class="note" id="st">Pair your phone with the car radio over Bluetooth, then tap Start.<br>Turn the ringer switch to ring (silent mode mutes web audio).</div>
+<div class="note" id="st">Pair your phone with the car radio over Bluetooth, then tap Start.<br>If you hear nothing, flip the ringer switch to ring.</div>
 </main>
 <script>
 const M={"idleLen": 5.9, "revLen": 7.5, "idleRpm": 847, "revRpm": [807, 807, 807, 807, 807, 807, 807, 847, 847, 847, 968, 1170, 1251, 1251, 1251, 797, 797, 797, 797, 928, 1090, 1170, 1453, 1453, 1574, 1614, 1655, 2785, 2785, 2785, 2422, 2422, 2220, 1937, 1816, 1614, 1614, 1614, 1614, 1937, 2866, 3431, 3431, 3431, 3391, 3351, 3028, 2906, 2826, 2543, 2382, 2059, 2018, 888, 888, 888, 1655, 2018, 2503, 2503, 1655, 3270, 3270, 2906, 2906, 2906, 2785, 2705, 2382, 2301, 2018, 1816]};
@@ -60,11 +68,13 @@ function pick(t,rate){
  const ok=[];
  for(let k=0;k<R.length;k++){const p=k/10;if(p+D*rate<chunkEnd(p)-0.02)ok.push([Math.abs(R[k]-t),p])}
  ok.sort((a,b)=>a[0]-b[0]);
- const n=ok.filter(o=>o[0]<=150).length;
- const pool=ok.slice(0,Math.max(1,Math.min(8,n||3)));
+ let pool=ok.filter(o=>o[0]<=150);
+ if(!pool.length)pool=ok.slice(0,3);
  return pool[Math.floor(Math.random()*pool.length)][1];
 }
 const S={gps:0,sm:0,last:0,lt:0,acc:0,mm:0,thr:0,rpm:IDLE,vol:.8,cab:.25,sens:1};
+S.fwd=null;S.af=0;S.cal=false;S.sum=[0,0,0];S.mag=0;S.n=0;S.gpsAt=0;
+S.fail=false;
 let ctx,eng,cabBuf,master,cabGain,cabSrc,wake,timer,sched,gpos=0,nextT=0,running=false,watch=null;
 const $=id=>document.getElementById(id),say=t=>$('st').innerHTML=t;
 $('vol').oninput=e=>S.vol=+e.target.value;
@@ -73,7 +83,9 @@ $('sens').oninput=e=>S.sens=+e.target.value;
 
 async function load(n){const r=await fetch(n);return ctx.decodeAudioData(await r.arrayBuffer())}
 async function buildAudio(){
+ try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}
  ctx=new (window.AudioContext||window.webkitAudioContext)();
+ ctx.onstatechange=()=>{if(running&&ctx.state!=='running')ctx.resume().catch(()=>{})};
  say('Loading sounds…');
  [eng,cabBuf]=await Promise.all([load('engine.wav'),load('cabin.wav')]);
  master=ctx.createGain();master.connect(ctx.destination);
@@ -96,10 +108,11 @@ function runSched(){
 }
 function tick(){
  S.sm+=(S.gps-S.sm)*0.1;S.acc*=0.98;
- let t=Math.max(0,S.acc)/(3/S.sens);
- if(S.acc>0.3)t+=S.mm/4*S.sens;
+ let t;
+ if(S.fwd)t=Math.max(0,S.af)/(2.5/S.sens);
+ else{t=Math.max(0,S.acc)/(3/S.sens);if(S.acc>0.3)t+=S.mm/4*S.sens}
  t=Math.min(1,t);
- S.thr+=(t-S.thr)*(t>S.thr?0.25:0.08);
+ S.thr+=(t-S.thr)*(t>S.thr?0.25:(S.fwd&&S.af<-0.8?0.35:0.08));
  const kmh=S.sm*3.6,top=GT.find(x=>kmh<x)||GT[GT.length-1];
  const base=S.sm<1?IDLE:IDLE+(kmh/top)*(REDLINE-IDLE)*0.8;
  S.rpm+=(Math.min(REDLINE,base+S.thr*1500)-S.rpm)*0.2;
@@ -107,22 +120,47 @@ function tick(){
  master.gain.setTargetAtTime(S.vol*(0.6+0.4*S.thr),now,0.05);
  cabGain.gain.setTargetAtTime(S.cab*0.6,now,0.1);
  $('rpm').textContent=Math.round(S.rpm);$('kmh').textContent=Math.round(kmh);
- $('mph').textContent=Math.round(kmh*0.621);$('thr').style.width=(S.thr*100)+'%';
+ $('mph').textContent=Math.round(kmh*0.621);$('thr').style.width=(S.thr*100)+'%';showDiag();
 }
 function onGeo(pos){
  const sp=pos.coords.speed;if(sp==null||sp<0)return;
  const t=pos.timestamp/1000;
  if(S.lt>0&&t-S.lt>0.1)S.acc+=((sp-S.last)/(t-S.lt)-S.acc)*0.5;
- S.last=sp;S.lt=t;S.gps=sp;
+ S.last=sp;S.lt=t;S.gps=sp;S.gpsAt=performance.now();
 }
 function onMotion(e){
- let g=0;
- if(e.acceleration&&e.acceleration.x!=null){const a=e.acceleration;g=Math.hypot(a.x,a.y,a.z)}
- else if(e.accelerationIncludingGravity){const a=e.accelerationIncludingGravity;g=Math.abs(Math.hypot(a.x,a.y,a.z)-9.81)}
+ const a=e.acceleration;let g=0;
+ if(a&&a.x!=null){
+  g=Math.hypot(a.x,a.y,a.z);
+  if(S.cal&&S.acc>0.7&&S.sm>1.5&&performance.now()-S.gpsAt<1500){
+   const w=S.acc;S.sum[0]+=a.x*w;S.sum[1]+=a.y*w;S.sum[2]+=a.z*w;S.mag+=g*w;S.n++;
+   if(S.n>=45)finishCal();
+  }
+  if(S.fwd)S.af+=((a.x*S.fwd[0]+a.y*S.fwd[1]+a.z*S.fwd[2])-S.af)*0.3;
+ }else if(e.accelerationIncludingGravity){const b=e.accelerationIncludingGravity;g=Math.abs(Math.hypot(b.x,b.y,b.z)-9.81)}
  S.mm+=(g-S.mm)*0.15;
 }
+function startCal(){
+ if(!running){$('cs').textContent='Tap Start first, then calibrate while driving.';return}
+ S.cal=true;S.sum=[0,0,0];S.mag=0;S.n=0;
+}
+function finishCal(){
+ S.cal=false;const n=Math.hypot(...S.sum);
+ if(n<1e-6||n/S.mag<0.5){S.fail=true;S.sum=[0,0,0];S.mag=0;S.n=0;S.cal=true;return}
+ S.fail=false;S.fwd=S.sum.map(v=>v/n);S.af=0;
+ }
+function resetCal(){S.fwd=null;S.af=0;S.fail=false;if(running)startCal();else S.cal=false}
+function showDiag(){
+ $('cs').textContent=S.cal?(S.n>0?'Calibrating… '+Math.min(100,Math.round(S.n/45*100))+'% (keep accelerating straight)':S.fail?'Direction not clear yet. Keep accelerating firmly on a straight road.':'Calibrating: accelerate firmly on a straight road.'):
+  S.fwd?'Calibrated ✓ (keep the phone in the same mount)':'Not calibrated. Tap Start, then accelerate firmly on a straight road.';
+ const f=S.fwd?S.af:0,w=Math.min(50,Math.abs(f)/4*50),cb=$('cb');
+ cb.style.width=w+'%';cb.style.left=(f<0?50-w:50)+'%';cb.style.background=f<0?'var(--stop)':'var(--go)';
+ $('af').textContent=f.toFixed(1);$('ga').textContent=S.acc.toFixed(1);$('tp').textContent=Math.round(S.thr*100);
+ $('ns').textContent=!S.fwd?'(calibrate to see gas vs braking)':f>0.6?'Gas':f<-0.8?'Braking':'Steady';
+}
+$('calb').onclick=resetCal;
 async function lockScreen(){try{wake=await navigator.wakeLock.request('screen')}catch(e){}}
-document.addEventListener('visibilitychange',()=>{if(running&&document.visibilityState==='visible')lockScreen()});
+document.addEventListener('visibilitychange',()=>{if(running&&document.visibilityState==='visible'){lockScreen();if(ctx&&ctx.state!=='running')ctx.resume().catch(()=>{})}});
 
 async function start(){
  try{
@@ -137,9 +175,11 @@ async function start(){
    {enableHighAccuracy:true,maximumAge:0,timeout:20000});
  }else say('This browser has no location access.');
  lockScreen();
+ S.gps=S.sm=S.acc=S.last=S.lt=S.thr=S.af=0;S.rpm=IDLE;
  gpos=pick(IDLE,1);nextT=0;
  timer=setInterval(tick,33);sched=setInterval(runSched,40);
  running=true;$('go').textContent='Stop';$('go').className='run';
+ S.fwd=null;S.af=0;startCal();
  say('Running. Keep this screen open while you drive. It stays awake on its own.');
 }
 function stop(){
