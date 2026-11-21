@@ -24,9 +24,6 @@ h1{margin:4px 0 0;font-size:26px;text-align:center}
 .sub{text-align:center;color:var(--mut);margin-top:4px}
 .bar{height:10px;border-radius:5px;background:var(--line);margin-top:12px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:var(--go);transition:width .08s}
-.seg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.seg button{padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:15px}
-.seg button.on{background:var(--fg);color:var(--bg);font-weight:600}
 label{display:block;margin:10px 0 4px;color:var(--mut);font-size:14px}
 input[type=range]{width:100%}
 #go{padding:18px;border:0;border-radius:16px;font-size:22px;font-weight:700;color:#fff;background:var(--go)}
@@ -36,77 +33,86 @@ input[type=range]{width:100%}
 </head>
 <body>
 <main>
-<h1>🏎️ Car Sound</h1>
+<h1>🏎️ Civic Type R</h1>
 <div class="card">
   <div class="rpm"><span id="rpm">0</span> <small style="font-size:18px">RPM</small></div>
   <div class="sub"><span id="kmh">0</span> km/h · <span id="mph">0</span> mph</div>
   <div class="bar"><i id="thr"></i></div>
 </div>
-<div class="seg" id="seg"></div>
 <div class="card">
-  <label>Volume</label><input id="vol" type="range" min="0" max="1" step="0.01" value="0.7">
+  <label>Volume</label><input id="vol" type="range" min="0" max="1" step="0.01" value="0.8">
+  <label>Cabin ambience</label><input id="cab" type="range" min="0" max="1" step="0.01" value="0.25">
   <label>Throttle sensitivity</label><input id="sens" type="range" min="0.3" max="2.5" step="0.1" value="1">
 </div>
 <button id="go">Start</button>
 <div class="note" id="st">Pair your phone with the car radio over Bluetooth, then tap Start.<br>Turn the ringer switch to ring (silent mode mutes web audio).</div>
 </main>
 <script>
-const P=[{n:'V8 Muscle',c:8,i:750,r:6500},{n:'Inline-4 Tuner',c:4,i:900,r:8000},{n:'V6 Sport',c:6,i:800,r:7000},{n:'V12 Exotic',c:12,i:900,r:8500}];
-const GT=[30,55,85,120,160,220];
-const S={gps:0,sm:0,last:0,lt:0,acc:0,mm:0,thr:0,rpm:800,pi:0,vol:.7,sens:1};
-let ctx,osc=[],master,filt,nGain,wake,timer,running=false;
-const $=id=>document.getElementById(id);
-const seg=$('seg');
-P.forEach((p,i)=>{const b=document.createElement('button');b.textContent=p.n;if(!i)b.className='on';
- b.onclick=()=>{S.pi=i;[...seg.children].forEach((c,j)=>c.className=j==i?'on':'')};seg.appendChild(b)});
-$('vol').oninput=e=>S.vol=+e.target.value;
-$('sens').oninput=e=>S.sens=+e.target.value;
-const say=t=>$('st').innerHTML=t;
-
-function buildAudio(){
- ctx=new (window.AudioContext||window.webkitAudioContext)();
- master=ctx.createGain();filt=ctx.createBiquadFilter();filt.type='lowpass';filt.frequency.value=1500;
- filt.connect(master);master.connect(ctx.destination);
- osc=[];
- for(let h=0;h<=6;h++){ // h=0 is the half-rate rumble
-  const o=ctx.createOscillator();o.type=h==0?'sine':'sawtooth';
-  const g=ctx.createGain();g.gain.value=h==0?0.5:0.5/h;
-  o.connect(g);g.connect(filt);o.start();osc.push({o,h});
- }
- const len=ctx.sampleRate*2,buf=ctx.createBuffer(1,len,ctx.sampleRate),d=buf.getChannelData(0);
- for(let i=0;i<len;i++)d[i]=Math.random()*2-1;
- const ns=ctx.createBufferSource();ns.buffer=buf;ns.loop=true;
- const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=900;bp.Q.value=0.6;
- nGain=ctx.createGain();nGain.gain.value=0.02;
- ns.connect(bp);bp.connect(nGain);nGain.connect(master);ns.start();
+const M={"idleLen": 5.9, "revLen": 7.5, "idleRpm": 847, "revRpm": [807, 807, 807, 807, 807, 807, 807, 847, 847, 847, 968, 1170, 1251, 1251, 1251, 797, 797, 797, 797, 928, 1090, 1170, 1453, 1453, 1574, 1614, 1655, 2785, 2785, 2785, 2422, 2422, 2220, 1937, 1816, 1614, 1614, 1614, 1614, 1937, 2866, 3431, 3431, 3431, 3391, 3351, 3028, 2906, 2826, 2543, 2382, 2059, 2018, 888, 888, 888, 1655, 2018, 2503, 2503, 1655, 3270, 3270, 2906, 2906, 2906, 2785, 2705, 2382, 2301, 2018, 1816]};
+const IDLE=M.idleRpm,REDLINE=7000,MAXR=Math.max(...M.revRpm),GT=[30,55,85,120,160,220];
+const H=0.06,D=0.12,TOL=220,TOTAL=M.idleLen+M.revLen;
+// rpm estimate for every 0.1 s of engine.wav
+const R=[];for(let k=0;k<Math.round(TOTAL*10);k++){const t=k/10;
+ R.push(t<M.idleLen?IDLE:M.revRpm[Math.max(0,Math.min(M.revRpm.length-1,Math.floor((t-M.idleLen-0.2)*10)))])}
+const rpmAt=p=>R[Math.max(0,Math.min(R.length-1,Math.floor(p*10)))];
+const chunkEnd=p=>p<M.idleLen?M.idleLen:TOTAL;
+function pick(t,rate){
+ const ok=[];
+ for(let k=0;k<R.length;k++){const p=k/10;if(p+D*rate<chunkEnd(p)-0.02)ok.push([Math.abs(R[k]-t),p])}
+ ok.sort((a,b)=>a[0]-b[0]);
+ const n=ok.filter(o=>o[0]<=150).length;
+ const pool=ok.slice(0,Math.max(1,Math.min(8,n||3)));
+ return pool[Math.floor(Math.random()*pool.length)][1];
 }
+const S={gps:0,sm:0,last:0,lt:0,acc:0,mm:0,thr:0,rpm:IDLE,vol:.8,cab:.25,sens:1};
+let ctx,eng,cabBuf,master,cabGain,cabSrc,wake,timer,sched,gpos=0,nextT=0,running=false,watch=null;
+const $=id=>document.getElementById(id),say=t=>$('st').innerHTML=t;
+$('vol').oninput=e=>S.vol=+e.target.value;
+$('cab').oninput=e=>S.cab=+e.target.value;
+$('sens').oninput=e=>S.sens=+e.target.value;
 
+async function load(n){const r=await fetch(n);return ctx.decodeAudioData(await r.arrayBuffer())}
+async function buildAudio(){
+ ctx=new (window.AudioContext||window.webkitAudioContext)();
+ say('Loading sounds…');
+ [eng,cabBuf]=await Promise.all([load('engine.wav'),load('cabin.wav')]);
+ master=ctx.createGain();master.connect(ctx.destination);
+ cabGain=ctx.createGain();cabGain.connect(ctx.destination);
+ cabSrc=ctx.createBufferSource();cabSrc.buffer=cabBuf;cabSrc.loop=true;cabSrc.connect(cabGain);cabSrc.start();
+}
+function grain(when,off,rate){
+ const s=ctx.createBufferSource(),g=ctx.createGain();
+ s.buffer=eng;s.playbackRate.value=rate;
+ g.gain.setValueAtTime(0,when);g.gain.linearRampToValueAtTime(1,when+H);g.gain.linearRampToValueAtTime(0,when+D);
+ s.connect(g);g.connect(master);s.start(when,off,D*rate);s.stop(when+D+0.02);
+}
+function runSched(){
+ const now=ctx.currentTime;if(nextT<now)nextT=now+0.03;
+ const tc=Math.min(S.rpm,MAXR),rate=S.rpm>MAXR?Math.min(2,S.rpm/MAXR):1;
+ while(nextT<now+0.25){
+  if(Math.abs(rpmAt(gpos)-tc)>TOL||gpos+D*rate>chunkEnd(gpos)-0.02)gpos=pick(tc,rate);
+  grain(nextT,gpos,rate);gpos+=H*rate;nextT+=H;
+ }
+}
 function tick(){
- const p=P[S.pi];
  S.sm+=(S.gps-S.sm)*0.1;S.acc*=0.98;
  let t=Math.max(0,S.acc)/(3/S.sens);
  if(S.acc>0.3)t+=S.mm/4*S.sens;
  t=Math.min(1,t);
  S.thr+=(t-S.thr)*(t>S.thr?0.25:0.08);
- const kmh=S.sm*3.6;
- const top=GT.find(x=>kmh<x)||GT[GT.length-1];
- let base=S.sm<1?p.i:p.i+(kmh/top)*(p.r-p.i)*0.8;
- const tgt=Math.min(p.r,base+S.thr*1500);
- S.rpm+=(tgt-S.rpm)*0.2;
- const fire=S.rpm/60*(p.c/2),now=ctx.currentTime;
- osc.forEach(({o,h})=>o.frequency.setTargetAtTime(h==0?fire/2:fire*h,now,0.03));
- master.gain.setTargetAtTime(S.vol*(0.45+0.55*S.thr),now,0.05);
- filt.frequency.setTargetAtTime(700+S.thr*2800+S.rpm*0.25,now,0.05);
- nGain.gain.setTargetAtTime(0.02+0.2*S.thr,now,0.05);
+ const kmh=S.sm*3.6,top=GT.find(x=>kmh<x)||GT[GT.length-1];
+ const base=S.sm<1?IDLE:IDLE+(kmh/top)*(REDLINE-IDLE)*0.8;
+ S.rpm+=(Math.min(REDLINE,base+S.thr*1500)-S.rpm)*0.2;
+ const now=ctx.currentTime;
+ master.gain.setTargetAtTime(S.vol*(0.6+0.4*S.thr),now,0.05);
+ cabGain.gain.setTargetAtTime(S.cab*0.6,now,0.1);
  $('rpm').textContent=Math.round(S.rpm);$('kmh').textContent=Math.round(kmh);
  $('mph').textContent=Math.round(kmh*0.621);$('thr').style.width=(S.thr*100)+'%';
 }
-
 function onGeo(pos){
- const sp=pos.coords.speed;
- if(sp==null||sp<0)return;
+ const sp=pos.coords.speed;if(sp==null||sp<0)return;
  const t=pos.timestamp/1000;
- if(S.lt>0&&t-S.lt>0.1){S.acc+=((sp-S.last)/(t-S.lt)-S.acc)*0.5}
+ if(S.lt>0&&t-S.lt>0.1)S.acc+=((sp-S.last)/(t-S.lt)-S.acc)*0.5;
  S.last=sp;S.lt=t;S.gps=sp;
 }
 function onMotion(e){
@@ -119,27 +125,29 @@ async function lockScreen(){try{wake=await navigator.wakeLock.request('screen')}
 document.addEventListener('visibilitychange',()=>{if(running&&document.visibilityState==='visible')lockScreen()});
 
 async function start(){
- if(!ctx)buildAudio();
- await ctx.resume();
+ try{
+  if(!ctx)await buildAudio();
+  await ctx.resume();
+ }catch(e){say('Could not load the sounds. Open the app once with WiFi, then try again.');return}
  try{if(window.DeviceMotionEvent&&DeviceMotionEvent.requestPermission){await DeviceMotionEvent.requestPermission()}}catch(e){}
  window.addEventListener('devicemotion',onMotion);
  if(navigator.geolocation){
-  S.watch=navigator.geolocation.watchPosition(onGeo,
+  watch=navigator.geolocation.watchPosition(onGeo,
    err=>say('Location blocked. Allow location for this page in Safari settings, then try again.'),
    {enableHighAccuracy:true,maximumAge:0,timeout:20000});
  }else say('This browser has no location access.');
  lockScreen();
- timer=setInterval(tick,33);
+ gpos=pick(IDLE,1);nextT=0;
+ timer=setInterval(tick,33);sched=setInterval(runSched,40);
  running=true;$('go').textContent='Stop';$('go').className='run';
  say('Running. Keep this screen open while you drive. It stays awake on its own.');
 }
 function stop(){
- clearInterval(timer);window.removeEventListener('devicemotion',onMotion);
- if(S.watch!=null)navigator.geolocation.clearWatch(S.watch);
+ clearInterval(timer);clearInterval(sched);window.removeEventListener('devicemotion',onMotion);
+ if(watch!=null)navigator.geolocation.clearWatch(watch);
  if(wake){try{wake.release()}catch(e){}}
  if(ctx)ctx.suspend();
- running=false;$('go').textContent='Start';$('go').className='';
- say('Stopped.');
+ running=false;$('go').textContent='Start';$('go').className='';say('Stopped.');
 }
 $('go').onclick=()=>running?stop():start();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
